@@ -47,7 +47,7 @@ def set_device(
 		use_gpu,
 		gpu_idx
 	):
-	if use_gpu:
+	if use_gpu and torch.cuda.is_available():
 		device = torch.device('cuda:'+str(gpu_idx))
 		print ("PyTorch version:", torch.__version__)
 		print ("PyTorch GPU count:", torch.cuda.device_count())

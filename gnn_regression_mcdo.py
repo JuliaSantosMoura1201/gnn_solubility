@@ -135,20 +135,24 @@ def main(args):
 			for i, batch in enumerate(valid_loader):
 				st = time.time()
 
+				orig_h = batch[0].ndata['h']
+				orig_e = batch[0].edata['e_ij']
 				tmp_list = []
 				for _ in range(args.num_sampling):
+					batch[0].ndata['h'] = orig_h
+					batch[0].edata['e_ij'] = orig_e
 					graph, y = batch[0], batch[1]
 					graph = graph.to(device)
 					y = y.to(device)
 					y = y.float()
-	
+
 					pred, alpha = model(graph, training=True)
 					pred = pred.unsqueeze(-1)
 					tmp_list.append(pred)
 
 				tmp_list = torch.cat(tmp_list, dim=-1)
 				tmp_list = torch.mean(tmp_list, dim=-1)
-				
+
 				y_list.append(y)
 				pred_list.append(tmp_list[:,0])
 
@@ -174,20 +178,24 @@ def main(args):
 			for i, batch in enumerate(test_loader):
 				st = time.time()
 	
+				orig_h = batch[0].ndata['h']
+				orig_e = batch[0].edata['e_ij']
 				tmp_list = []
 				for _ in range(args.num_sampling):
+					batch[0].ndata['h'] = orig_h
+					batch[0].edata['e_ij'] = orig_e
 					graph, y = batch[0], batch[1]
 					graph = graph.to(device)
 					y = y.to(device)
 					y = y.float()
-	
+
 					pred, alpha = model(graph, training=True)
 					pred = pred.unsqueeze(-1)
 					tmp_list.append(pred)
 
 				tmp_list = torch.cat(tmp_list, dim=-1)
 				tmp_list = torch.mean(tmp_list, dim=-1)
-				
+
 				y_list.append(y)
 				pred_list.append(tmp_list[:,0])
 
