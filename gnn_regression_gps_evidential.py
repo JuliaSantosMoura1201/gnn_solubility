@@ -1,5 +1,6 @@
 import time
 import argparse
+import os
 
 import torch
 from torch.utils.data import DataLoader
@@ -8,7 +9,7 @@ from libs.io_utils import get_dataset
 from libs.io_utils import MyDataset
 from libs.io_utils import gnn_collate_fn
 
-from libs.models import MyModel
+from libs.gps_model import GPSModel
 
 from libs.evidential_utils import evidential_regression_loss
 from libs.evidential_utils import nig_uncertainty
@@ -42,15 +43,16 @@ def main(args):
     test_loader  = DataLoader(test_ds,  batch_size=args.batch_size, shuffle=False,
                               num_workers=args.num_workers, collate_fn=gnn_collate_fn)
 
-    # out_dim=4: raw outputs for (gamma, nu, alpha, beta) of the NIG distribution
-    model = MyModel(
-        model_type=args.model_type,
+    model = GPSModel(
         num_layers=args.num_layers,
         hidden_dim=args.hidden_dim,
+        num_heads=args.num_heads,
         readout=args.readout,
         dropout_prob=args.dropout_prob,
-        out_dim=4,
+        out_dim=4,  # NIG: gamma, nu, alpha, beta
         norm_features=args.norm_features,
+        local_mp_type=args.local_mp_type,
+        rwse_k=args.rwse_k,
     )
     model = model.to(device)
 
@@ -61,7 +63,6 @@ def main(args):
         optimizer=optimizer, step_size=40, gamma=0.1
     )
 
-    import os
     os.makedirs(args.log_dir, exist_ok=True)
     log_path = os.path.join(args.log_dir, f"{args.job_title}_seed{args.seed}.csv")
     csv_fh, csv_writer = open_csv_logger(log_path, [
@@ -71,7 +72,7 @@ def main(args):
     ])
     early_stop = EarlyStopping(patience=args.patience, mode='min')
     best_valid_rmse = float('inf')
-    best_save_path = os.path.join('./save', f"best_{args.job_title}_{args.model_type}_{args.readout}_{args.data_seed}_s{args.seed}.pth")
+    best_save_path = os.path.join('./save', f"best_{args.job_title}_gps_{args.readout}_{args.data_seed}_s{args.seed}.pth")
 
     for epoch in range(args.num_epoches):
         # --- Train ---
@@ -85,12 +86,11 @@ def main(args):
             optimizer.zero_grad()
 
             graph, y = batch[0].to(device), batch[1].to(device).float()
-
             pred_raw, _ = model(graph, training=True)
+
             loss, gamma, nu, alpha, beta = evidential_regression_loss(
                 pred_raw, y, coeff=args.evidential_coeff
             )
-
             y_list.append(y)
             pred_list.append(gamma.detach())
 
@@ -108,7 +108,7 @@ def main(args):
         train_loss /= num_batches
         train_metrics = evaluate_regression(y_list=y_list, pred_list=pred_list)
 
-        # --- Validation & Test (single forward pass — no MC sampling) ---
+        # --- Validation & Test ---
         model.eval()
         with torch.no_grad():
             valid_loss = 0.0
@@ -123,7 +123,6 @@ def main(args):
                 loss, gamma, nu, alpha, beta = evidential_regression_loss(
                     pred_raw, y, coeff=args.evidential_coeff
                 )
-
                 y_list.append(y)
                 pred_list.append(gamma)
                 valid_loss += loss.cpu().numpy()
@@ -166,12 +165,9 @@ def main(args):
 
             test_loss /= num_batches
             test_metrics = evaluate_regression(y_list=y_list, pred_list=pred_list)
-
-            # Mean uncertainty over the test set
             ale_mean = torch.cat(ale_list).mean().item()
             epi_mean = torch.cat(epi_list).mean().item()
 
-        # Log line — same format as gnn_regression_mcdo.py for easy comparison
         print("End of ", epoch + 1, "-th epoch",
               "MSE:",  round(train_metrics[0], 3), "\t", round(valid_metrics[0], 3), "\t", round(test_metrics[0], 3),
               "RMSE:", round(train_metrics[1], 3), "\t", round(valid_metrics[1], 3), "\t", round(test_metrics[1], 3),
@@ -197,11 +193,8 @@ def main(args):
 
         save_path = (
             f"./save/{args.job_title}_"
-            f"{args.model_type}_"
-            f"{args.hidden_dim}_"
-            f"{args.readout}_"
-            f"{args.split_method}_"
-            f"{args.data_seed}_evidential.pth"
+            f"gps_{args.hidden_dim}_{args.readout}_"
+            f"{args.split_method}_{args.data_seed}_evidential.pth"
         )
         torch.save({
             'epoch': epoch,
@@ -214,38 +207,38 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--job_title',      type=str,      default='Evidential_regression')
-    parser.add_argument('--use_gpu',        type=str2bool, default=True)
-    parser.add_argument('--gpu_idx',        type=str,      default='1')
-    parser.add_argument('--seed',           type=int,      default=999)
+    parser.add_argument('--job_title',     type=str,      default='GPS_evidential')
+    parser.add_argument('--use_gpu',       type=str2bool, default=True)
+    parser.add_argument('--gpu_idx',       type=str,      default='0')
+    parser.add_argument('--seed',          type=int,      default=999)
 
-    parser.add_argument('--dataset_name',   type=str,      default='Solubility')
-    parser.add_argument('--split_method',   type=str,      default='scaffold')
-    parser.add_argument('--data_seed',      type=int,      default=999)
+    parser.add_argument('--dataset_name',  type=str,      default='Solubility')
+    parser.add_argument('--split_method',  type=str,      default='scaffold')
+    parser.add_argument('--data_seed',     type=int,      default=999)
 
-    parser.add_argument('--model_type',     type=str,      default='gcn')
-    parser.add_argument('--num_layers',     type=int,      default=4)
-    parser.add_argument('--hidden_dim',     type=int,      default=128)
-    parser.add_argument('--readout',        type=str,      default='pma')
-    parser.add_argument('--dropout_prob',   type=float,    default=0.0)
-    parser.add_argument('--norm_features',  type=str2bool, default=False)
+    parser.add_argument('--num_layers',    type=int,      default=4)
+    parser.add_argument('--hidden_dim',    type=int,      default=128)
+    parser.add_argument('--num_heads',     type=int,      default=4)
+    parser.add_argument('--readout',       type=str,      default='pma')
+    parser.add_argument('--dropout_prob',  type=float,    default=0.0)
+    parser.add_argument('--norm_features', type=str2bool, default=False)
+    parser.add_argument('--local_mp_type', type=str,      default='gin')
+    parser.add_argument('--rwse_k',        type=int,      default=16)
 
-    parser.add_argument('--num_epoches',    type=int,      default=150)
-    parser.add_argument('--num_workers',    type=int,      default=8)
-    parser.add_argument('--batch_size',     type=int,      default=64)
-    parser.add_argument('--lr',             type=float,    default=1e-3)
-    parser.add_argument('--weight_decay',   type=float,    default=1e-6)
+    parser.add_argument('--num_epoches',   type=int,      default=150)
+    parser.add_argument('--num_workers',   type=int,      default=0)
+    parser.add_argument('--batch_size',    type=int,      default=64)
+    parser.add_argument('--lr',            type=float,    default=1e-3)
+    parser.add_argument('--weight_decay',  type=float,    default=1e-6)
 
-    # Evidential-specific
     parser.add_argument('--evidential_coeff', type=float, default=0.01,
                         help='Weight (lambda) for the NIG evidence regularization term')
-    parser.add_argument('--log_dir', type=str, default='logs',
+    parser.add_argument('--log_dir',  type=str, default='logs',
                         help='Directory for per-epoch CSV metric logs')
     parser.add_argument('--patience', type=int, default=0,
                         help='Early-stopping patience in epochs (0 = disabled)')
 
     args = parser.parse_args()
-
     print("Arguments")
     for k, v in vars(args).items():
         print(k, ": ", v)

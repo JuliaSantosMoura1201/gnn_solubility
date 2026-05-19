@@ -1,4 +1,6 @@
 import argparse
+import csv
+import os
 import random
 
 import math
@@ -19,6 +21,37 @@ plt.switch_backend('agg')
 
 from rdkit import Chem
 from rdkit.Chem import Draw
+
+
+class EarlyStopping:
+	"""Stops training when monitored metric stops improving."""
+	def __init__(self, patience=0, mode='min'):
+		self.patience = patience
+		self.mode = mode
+		self.best = float('inf') if mode == 'min' else float('-inf')
+		self.counter = 0
+		self.active = patience > 0
+
+	def step(self, val):
+		if not self.active:
+			return False
+		improved = (self.mode == 'min' and val < self.best) or \
+		           (self.mode == 'max' and val > self.best)
+		if improved:
+			self.best = val
+			self.counter = 0
+			return False
+		self.counter += 1
+		return self.counter >= self.patience
+
+
+def open_csv_logger(log_path, fieldnames):
+	os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
+	fh = open(log_path, 'w', newline='')
+	writer = csv.DictWriter(fh, fieldnames=fieldnames)
+	writer.writeheader()
+	fh.flush()
+	return fh, writer
 
 
 def str2bool(v):

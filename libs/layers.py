@@ -135,7 +135,7 @@ class GraphIsomorphismEdge(nn.Module):
 		h0 = graph.ndata['h']
 
 		graph.update_all(fn.copy_u('h', 'm'), fn.sum('m', 'neigh'))
-		graph.update_all(fn.copy_edge('e_ij', 'm_e'), fn.sum('m_e', 'u_'))
+		graph.update_all(fn.copy_e('e_ij', 'm_e'), fn.sum('m_e', 'u_'))
 		u_ = graph.ndata['neigh'] + graph.ndata['u_']
 		h = self.mlp(u_) + h0
 		h = self.norm(h)
@@ -203,7 +203,7 @@ class GraphAttention(nn.Module):
 		graph.apply_edges(fn.v_add_e('k', 'x_ij', 'm'))
 
 		graph.edata['m'] = graph.edata['attn'] * graph.edata['m']
-		graph.update_all(fn.copy_edge('m', 'm'), fn.sum('m', 'h'))
+		graph.update_all(fn.copy_e('m', 'm'), fn.sum('m', 'h'))
 		
 		h = self.w6(h0) + graph.ndata['h'].view(-1, self.hidden_dim)
 		h = self.norm(h)

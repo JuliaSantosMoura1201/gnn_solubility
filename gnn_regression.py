@@ -16,6 +16,8 @@ from libs.utils import str2bool
 from libs.utils import set_seed
 from libs.utils import set_device
 from libs.utils import evaluate_regression
+from libs.utils import EarlyStopping
+from libs.utils import open_csv_logger
 
 
 def main(args):
@@ -80,6 +82,19 @@ def main(args):
 		gamma=0.1,
 	)
 	mse_loss = nn.MSELoss()
+
+	import os
+	os.makedirs(args.log_dir, exist_ok=True)
+	log_path = os.path.join(args.log_dir, f"{args.job_title}_seed{args.seed}.csv")
+	csv_fh, csv_writer = open_csv_logger(log_path, [
+		'epoch', 'train_loss', 'train_rmse', 'train_r2',
+		'valid_loss', 'valid_rmse', 'valid_r2',
+		'test_loss', 'test_rmse', 'test_r2',
+	])
+	early_stop = EarlyStopping(patience=args.patience, mode='min')
+	best_valid_rmse = float('inf')
+	best_save_path = os.path.join('./save', f"best_{args.job_title}_{args.model_type}_{args.readout}_{args.data_seed}_s{args.seed}.pth")
+
 	for epoch in range(args.num_epoches):
 		# Train
 		model.train()
@@ -186,7 +201,24 @@ def main(args):
 			   "RMSE:", round(train_metrics[1], 3), "\t", round(valid_metrics[1], 3), "\t", round(test_metrics[1], 3), \
 			   "R2:", round(train_metrics[2], 3), "\t", round(valid_metrics[2], 3), "\t", round(test_metrics[2], 3))
 
-		save_path = './save/' 
+		csv_writer.writerow({
+			'epoch': epoch + 1,
+			'train_loss': round(float(train_loss), 6), 'train_rmse': round(train_metrics[1], 6), 'train_r2': round(train_metrics[2], 6),
+			'valid_loss': round(float(valid_loss), 6), 'valid_rmse': round(valid_metrics[1], 6), 'valid_r2': round(valid_metrics[2], 6),
+			'test_loss':  round(float(test_loss),  6), 'test_rmse':  round(test_metrics[1],  6), 'test_r2':  round(test_metrics[2],  6),
+		})
+		csv_fh.flush()
+
+		if valid_metrics[1] < best_valid_rmse:
+			best_valid_rmse = valid_metrics[1]
+			torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(),
+			            'optimizer_state_dict': optimizer.state_dict()}, best_save_path)
+
+		if early_stop.step(valid_metrics[1]):
+			print(f"CONVERGENCE_EPOCH={epoch+1}")
+			break
+
+		save_path = './save/'
 		save_path += str(args.job_title) + '_'
 		save_path += str(args.model_type) + '_'
 		save_path += str(args.hidden_dim) + '_'
@@ -198,6 +230,8 @@ def main(args):
 			'model_state_dict': model.state_dict(),
 			'optimizer_state_dict': optimizer.state_dict(),
 		}, save_path)
+
+	csv_fh.close()
 
 
 if __name__ == '__main__':
@@ -244,8 +278,12 @@ if __name__ == '__main__':
 	parser.add_argument('--weight_decay', type=float, default=1e-6, 
 						help='Weight decay coefficient')
 
-	parser.add_argument('--save_model', type=str2bool, default=True, 
+	parser.add_argument('--save_model', type=str2bool, default=True,
 						help='whether to save model')
+	parser.add_argument('--log_dir', type=str, default='logs',
+						help='Directory for per-epoch CSV metric logs')
+	parser.add_argument('--patience', type=int, default=0,
+						help='Early-stopping patience in epochs (0 = disabled)')
 
 	args = parser.parse_args()
 

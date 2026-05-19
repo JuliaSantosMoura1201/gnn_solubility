@@ -16,6 +16,8 @@ from libs.utils import str2bool
 from libs.utils import set_seed
 from libs.utils import set_device
 from libs.utils import evaluate_classification_multi
+from libs.utils import EarlyStopping
+from libs.utils import open_csv_logger
 
 
 def main(args):
@@ -57,6 +59,18 @@ def main(args):
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer=optimizer, step_size=40, gamma=0.1
     )
+
+    import os
+    os.makedirs(args.log_dir, exist_ok=True)
+    log_path = os.path.join(args.log_dir, f"{args.job_title}_seed{args.seed}.csv")
+    csv_fh, csv_writer = open_csv_logger(log_path, [
+        'epoch', 'train_loss', 'train_acc', 'train_ece',
+        'valid_loss', 'valid_acc', 'valid_ece',
+        'test_loss', 'test_acc', 'test_ece',
+    ])
+    early_stop = EarlyStopping(patience=args.patience, mode='min')
+    best_valid_loss = float('inf')
+    best_save_path = os.path.join('./save', f"best_{args.job_title}_{args.model_type}_{args.readout}_{args.data_seed}_s{args.seed}.pth")
 
     for epoch in range(args.num_epoches):
         # --- Train ---
@@ -177,6 +191,23 @@ def main(args):
               round(test_metrics[1], 3),
               "Vacuity:", round(vacuity_mean, 4))
 
+        csv_writer.writerow({
+            'epoch': epoch + 1,
+            'train_loss': round(float(train_loss), 6), 'train_acc': round(train_metrics[0], 6), 'train_ece': round(float(train_metrics[1]), 6),
+            'valid_loss': round(float(valid_loss), 6), 'valid_acc': round(valid_metrics[0], 6), 'valid_ece': round(float(valid_metrics[1]), 6),
+            'test_loss':  round(float(test_loss),  6), 'test_acc':  round(test_metrics[0],  6), 'test_ece':  round(float(test_metrics[1]),  6),
+        })
+        csv_fh.flush()
+
+        if valid_loss < best_valid_loss:
+            best_valid_loss = valid_loss
+            torch.save({'epoch': epoch, 'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict()}, best_save_path)
+
+        if early_stop.step(valid_loss):
+            print(f"CONVERGENCE_EPOCH={epoch+1}")
+            break
+
         save_path = (
             f"./save/{args.job_title}_"
             f"{args.model_type}_"
@@ -190,6 +221,8 @@ def main(args):
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
         }, save_path)
+
+    csv_fh.close()
 
 
 if __name__ == '__main__':
@@ -223,6 +256,10 @@ if __name__ == '__main__':
                         help='Maximum weight for the KL regularization term')
     parser.add_argument('--warmup_epochs',    type=int,   default=10,
                         help='Epochs over which to linearly anneal the KL weight from 0 to coeff')
+    parser.add_argument('--log_dir', type=str, default='logs',
+                        help='Directory for per-epoch CSV metric logs')
+    parser.add_argument('--patience', type=int, default=0,
+                        help='Early-stopping patience in epochs (0 = disabled)')
 
     args = parser.parse_args()
 
