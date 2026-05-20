@@ -219,6 +219,80 @@ class GraphAttention(nn.Module):
 		return graph
 
 
+class KerReadLayer(nn.Module):
+	"""Kernel Readout (KerRead) — Yu et al., IJCAI 2024.
+
+	Computes a graph vector by applying a kernel between learned per-graph
+	adaptive centers and each feature dimension of the node embedding matrix.
+
+	For each graph G with node matrix H ∈ R^{n×d}:
+	  1. Center scalars: c = f_θ(H) ∈ R^n  (one scalar per node)
+	  2. Multi-head centers: C[:,h] = scale_h * c  →  C ∈ R^{n×num_heads}
+	  3. Kernel matrix: Z[h,j] = k(C[:,h], H[:,j])  →  Z ∈ R^{num_heads×d}
+	  4. Fusion: z = W * Z.T  →  z ∈ R^d   (Linear(num_heads→1) per feature dim)
+
+	Gaussian kernel: k(a,b) = exp(-‖a−b‖² / (2β²))
+	Both scale factors and β are learnable (log-parameterised for positivity).
+	Returns (out, None) to match PMALayer's (out, alpha) signature.
+	"""
+	def __init__(
+			self,
+			hidden_dim,
+			num_heads=4,
+			kernel='gaussian',
+		):
+		super().__init__()
+		self.hidden_dim = hidden_dim
+		self.num_heads = num_heads
+		self.kernel = kernel
+
+		# Pre-encoder: 2-layer MLP applied to node features before center and
+		# kernel computation (matches official implementation)
+		self.x_encoder = nn.Sequential(
+			nn.Linear(hidden_dim, hidden_dim),
+			nn.ReLU(),
+			nn.Linear(hidden_dim, hidden_dim),
+		)
+
+		# f_θ: maps each node's encoded feature vector to a scalar
+		self.f_theta = nn.Linear(hidden_dim, 1, bias=True)
+
+		# One learnable scale factor per head (log-space → always positive)
+		self.log_scales = nn.Parameter(torch.zeros(num_heads))
+
+		# Kernel bandwidth β (log-space → always positive)
+		self.log_beta = nn.Parameter(torch.zeros(1))
+
+		# Fusion across heads: Linear(num_heads → 1) applied per feature dim
+		self.fusion = nn.Linear(num_heads, 1, bias=False)
+
+	def forward(self, graph):
+		graphs = dgl.unbatch(graph)
+		scales = torch.exp(self.log_scales)   # (num_heads,)
+		beta   = torch.exp(self.log_beta)     # scalar
+
+		out_list = []
+		for g in graphs:
+			H = self.x_encoder(g.ndata['h'])  # (n_i, d) — pre-encode before centers and kernel
+
+			# Adaptive center: one scalar per node, scaled per head
+			node_scalars = self.f_theta(H).squeeze(-1)          # (n_i,)
+			C = node_scalars.unsqueeze(1) * scales.unsqueeze(0) # (n_i, num_heads)
+
+			# Kernel matrix Z[h, j] = k(C[:,h], H[:,j])
+			# diff: (num_heads, d, n_i)
+			diff    = C.T.unsqueeze(1) - H.T.unsqueeze(0)
+			sq_dist = (diff ** 2).sum(-1)                        # (num_heads, d)
+			Z       = torch.exp(-sq_dist / (2 * beta ** 2))     # (num_heads, d)
+
+			# Fusion: (d, num_heads) → Linear → (d, 1) → (d,)
+			z = self.fusion(Z.T).squeeze(-1)                     # (d,)
+			out_list.append(z)
+
+		out = torch.stack(out_list, dim=0)  # (batch_size, d)
+		return out, None
+
+
 class PMALayer(nn.Module):
 	def __init__(
 			self,

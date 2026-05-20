@@ -9,6 +9,7 @@ from libs.layers import GraphIsomorphism
 from libs.layers import GraphIsomorphismEdge
 from libs.layers import GraphAttention
 from libs.layers import PMALayer
+from libs.layers import KerReadLayer
 
 
 class MyModel(nn.Module):
@@ -77,6 +78,11 @@ class MyModel(nn.Module):
 				num_heads=num_heads,
 				norm_features=norm_features,
 			)
+		elif self.readout == 'kerread':
+			self.ker_read = KerReadLayer(
+				hidden_dim=hidden_dim,
+				num_heads=num_heads,
+			)
 
 		self.linear_out = nn.Linear(hidden_dim, out_dim, bias=True)
 
@@ -108,6 +114,8 @@ class MyModel(nn.Module):
 			out = dgl.readout_nodes(graph, 'h', op=self.readout)
 		elif self.readout == 'pma':
 			out, alpha = self.pma(graph)
+		elif self.readout == 'kerread':
+			out, alpha = self.ker_read(graph)
 		out = self.linear_out(out)
 
 		if self.apply_sigmoid:
