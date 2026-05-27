@@ -62,10 +62,10 @@ def evidential_regression_loss(pred, y, coeff=0.01):
         loss:  scalar loss for backprop.
         gamma, nu, alpha, beta: constrained NIG parameters, each (batch,).
     """
-    gamma = pred[:, 0]                        # mean — unconstrained
-    nu    = F.softplus(pred[:, 1])            # > 0
-    alpha = F.softplus(pred[:, 2]) + 1.0     # > 1  (needed for finite variance)
-    beta  = F.softplus(pred[:, 3])            # > 0
+    gamma = pred[:, 0]                             # mean — unconstrained
+    nu    = F.softplus(pred[:, 1]) + 1e-4         # keep away from 0: log(nu) in NIG NLL explodes otherwise
+    alpha = F.softplus(pred[:, 2]) + 1.0          # > 1  (needed for finite variance)
+    beta  = F.softplus(pred[:, 3]) + 1e-4         # keep away from 0: same reason
 
     loss = nig_nll(y, gamma, nu, alpha, beta) + coeff * nig_reg(y, gamma, nu, alpha)
     return loss, gamma, nu, alpha, beta

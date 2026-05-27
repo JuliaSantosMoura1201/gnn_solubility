@@ -12,7 +12,7 @@ from libs.io_utils import gnn_collate_fn
 from libs.gps_model import GPSModel
 
 from libs.evidential_utils import evidential_regression_loss
-from libs.evidential_utils import nig_uncertainty
+from libs.evidential_utils import nig_uncertainty, nig_nll
 
 from libs.utils import str2bool
 from libs.utils import set_seed
@@ -67,8 +67,8 @@ def main(args):
     log_path = os.path.join(args.log_dir, f"{args.job_title}_seed{args.seed}.csv")
     csv_fh, csv_writer = open_csv_logger(log_path, [
         'epoch', 'train_loss', 'train_rmse', 'train_r2',
-        'valid_loss', 'valid_rmse', 'valid_r2',
-        'test_loss', 'test_rmse', 'test_r2',
+        'valid_loss', 'valid_rmse', 'valid_r2', 'valid_nll',
+        'test_loss', 'test_rmse', 'test_r2', 'test_nll',
     ])
     early_stop = EarlyStopping(patience=args.patience, mode='min')
     best_valid_rmse = float('inf')
@@ -91,10 +91,16 @@ def main(args):
             loss, gamma, nu, alpha, beta = evidential_regression_loss(
                 pred_raw, y, coeff=args.evidential_coeff
             )
+
+            if not torch.isfinite(loss):
+                print(f"[warn] non-finite loss at epoch {epoch+1} batch {i+1} — skipping")
+                continue
+
             y_list.append(y)
             pred_list.append(gamma.detach())
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             train_loss += loss.detach().cpu().numpy()
 
@@ -105,7 +111,10 @@ def main(args):
                   "\t Time spent:", round(et - st, 2), "(s)")
 
         scheduler.step()
-        train_loss /= num_batches
+        if not y_list:
+            print(f"[warn] epoch {epoch+1}: all training batches were non-finite — stopping")
+            break
+        train_loss /= max(len(y_list), 1)
         train_metrics = evaluate_regression(y_list=y_list, pred_list=pred_list)
 
         # --- Validation & Test ---
@@ -114,6 +123,7 @@ def main(args):
             valid_loss = 0.0
             num_batches = len(valid_loader)
             y_list, pred_list = [], []
+            valid_nll_batches = []
 
             for i, batch in enumerate(valid_loader):
                 st = time.time()
@@ -126,6 +136,7 @@ def main(args):
                 y_list.append(y)
                 pred_list.append(gamma)
                 valid_loss += loss.cpu().numpy()
+                valid_nll_batches.append(nig_nll(y, gamma, nu, alpha, beta).item())
 
                 et = time.time()
                 print("Valid!!! Epoch:", epoch + 1,
@@ -135,11 +146,13 @@ def main(args):
 
             valid_loss /= num_batches
             valid_metrics = evaluate_regression(y_list=y_list, pred_list=pred_list)
+            valid_nll_mean = sum(valid_nll_batches) / len(valid_nll_batches)
 
             test_loss = 0.0
             num_batches = len(test_loader)
             y_list, pred_list = [], []
             ale_list, epi_list = [], []
+            test_nll_batches = []
 
             for i, batch in enumerate(test_loader):
                 st = time.time()
@@ -156,6 +169,7 @@ def main(args):
                 ale_list.append(aleatoric)
                 epi_list.append(epistemic)
                 test_loss += loss.cpu().numpy()
+                test_nll_batches.append(nig_nll(y, gamma, nu, alpha, beta).item())
 
                 et = time.time()
                 print("Test!!! Epoch:", epoch + 1,
@@ -165,6 +179,7 @@ def main(args):
 
             test_loss /= num_batches
             test_metrics = evaluate_regression(y_list=y_list, pred_list=pred_list)
+            test_nll_mean = sum(test_nll_batches) / len(test_nll_batches)
             ale_mean = torch.cat(ale_list).mean().item()
             epi_mean = torch.cat(epi_list).mean().item()
 
@@ -177,8 +192,8 @@ def main(args):
         csv_writer.writerow({
             'epoch': epoch + 1,
             'train_loss': round(float(train_loss), 6), 'train_rmse': round(train_metrics[1], 6), 'train_r2': round(train_metrics[2], 6),
-            'valid_loss': round(float(valid_loss), 6), 'valid_rmse': round(valid_metrics[1], 6), 'valid_r2': round(valid_metrics[2], 6),
-            'test_loss':  round(float(test_loss),  6), 'test_rmse':  round(test_metrics[1],  6), 'test_r2':  round(test_metrics[2],  6),
+            'valid_loss': round(float(valid_loss), 6), 'valid_rmse': round(valid_metrics[1], 6), 'valid_r2': round(valid_metrics[2], 6), 'valid_nll': round(valid_nll_mean, 6),
+            'test_loss':  round(float(test_loss),  6), 'test_rmse':  round(test_metrics[1],  6), 'test_r2':  round(test_metrics[2],  6), 'test_nll': round(test_nll_mean, 6),
         })
         csv_fh.flush()
 
