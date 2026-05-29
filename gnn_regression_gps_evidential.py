@@ -66,7 +66,7 @@ def main(args):
     os.makedirs(args.log_dir, exist_ok=True)
     log_path = os.path.join(args.log_dir, f"{args.job_title}_seed{args.seed}.csv")
     csv_fh, csv_writer = open_csv_logger(log_path, [
-        'epoch', 'train_loss', 'train_rmse', 'train_r2',
+        'epoch', 'train_loss', 'train_rmse', 'train_r2', 'train_nll',
         'valid_loss', 'valid_rmse', 'valid_r2', 'valid_nll',
         'test_loss', 'test_rmse', 'test_r2', 'test_nll',
     ])
@@ -80,6 +80,7 @@ def main(args):
         num_batches = len(train_loader)
         train_loss = 0.0
         y_list, pred_list = [], []
+        train_nll_batches = []
 
         for i, batch in enumerate(train_loader):
             st = time.time()
@@ -98,6 +99,7 @@ def main(args):
 
             y_list.append(y)
             pred_list.append(gamma.detach())
+            train_nll_batches.append(nig_nll(y, gamma.detach(), nu.detach(), alpha.detach(), beta.detach()).item())
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -115,6 +117,7 @@ def main(args):
             print(f"[warn] epoch {epoch+1}: all training batches were non-finite — stopping")
             break
         train_loss /= max(len(y_list), 1)
+        train_nll_mean = sum(train_nll_batches) / len(train_nll_batches) if train_nll_batches else float('nan')
         train_metrics = evaluate_regression(y_list=y_list, pred_list=pred_list)
 
         # --- Validation & Test ---
@@ -191,7 +194,7 @@ def main(args):
 
         csv_writer.writerow({
             'epoch': epoch + 1,
-            'train_loss': round(float(train_loss), 6), 'train_rmse': round(train_metrics[1], 6), 'train_r2': round(train_metrics[2], 6),
+            'train_loss': round(float(train_loss), 6), 'train_rmse': round(train_metrics[1], 6), 'train_r2': round(train_metrics[2], 6), 'train_nll': round(train_nll_mean, 6),
             'valid_loss': round(float(valid_loss), 6), 'valid_rmse': round(valid_metrics[1], 6), 'valid_r2': round(valid_metrics[2], 6), 'valid_nll': round(valid_nll_mean, 6),
             'test_loss':  round(float(test_loss),  6), 'test_rmse':  round(test_metrics[1],  6), 'test_r2':  round(test_metrics[2],  6), 'test_nll': round(test_nll_mean, 6),
         })
