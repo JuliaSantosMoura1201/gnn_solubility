@@ -87,20 +87,27 @@ for name, cfg in MODELS.items():
     )
 
 
+# ── shared colour ranges (global 2nd–98th percentile across both models) ──────
+all_ale = np.concatenate([results[n]['ale'] for n in MODELS])
+all_epi = np.concatenate([results[n]['epi'] for n in MODELS])
+ale_vmin, ale_vmax = np.percentile(all_ale, 2), np.percentile(all_ale, 98)
+epi_vmin, epi_vmax = np.percentile(all_epi, 2), np.percentile(all_epi, 98)
+VRANGES = {'ale': (ale_vmin, ale_vmax), 'epi': (epi_vmin, epi_vmax)}
+
 # ── plot ──────────────────────────────────────────────────────────────────────
 fig, axes = plt.subplots(2, 2, figsize=(14, 12))
 
 for row, name in enumerate(MODELS):
     r = results[name]
 
-    for col, (unc, unc_label) in enumerate([
-        (r['ale'], 'Aleatoric uncertainty'),
-        (r['epi'], 'Epistemic uncertainty'),
+    for col, (unc_key, unc_label) in enumerate([
+        ('ale', 'Aleatoric uncertainty'),
+        ('epi', 'Epistemic uncertainty'),
     ]):
-        ax = axes[row, col]
+        ax  = axes[row, col]
+        unc = r[unc_key]
+        vmin, vmax = VRANGES[unc_key]
 
-        # Clip colour range to [2nd, 98th] percentile so outliers don't wash out the palette
-        vmin, vmax = np.percentile(unc, 2), np.percentile(unc, 98)
         sc = ax.scatter(r['y_true'], r['y_pred'],
                         c=unc, cmap='RdYlGn_r', s=5, alpha=0.5,
                         vmin=vmin, vmax=vmax, rasterized=True)
